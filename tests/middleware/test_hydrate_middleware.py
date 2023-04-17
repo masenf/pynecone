@@ -10,6 +10,8 @@ from pynecone.state import State
 class TestState(State):
     """A test state with no return in handler."""
 
+    __test__ = False
+
     num: int = 0
 
     def test_handler(self):
@@ -19,6 +21,8 @@ class TestState(State):
 
 class TestState2(State):
     """A test state with return in handler."""
+
+    __test__ = False
 
     num: int = 0
     name: str
@@ -39,6 +43,8 @@ class TestState2(State):
 
 class TestState3(State):
     """A test state with async handler."""
+
+    __test__ = False
 
     num: int = 0
 
