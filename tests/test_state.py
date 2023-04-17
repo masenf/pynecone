@@ -1,4 +1,5 @@
-from typing import Dict, List
+from unittest import mock
+from typing import Dict, List, Tuple
 
 import pytest
 from plotly.graph_objects import Figure
@@ -504,6 +505,72 @@ def test_set_dirty_var(test_state):
     # Cleaning the state should remove all dirty vars.
     test_state.clean()
     assert test_state.dirty_vars == set()
+
+
+@pytest.fixture
+def interdependent_state() -> Tuple[State, List[mock.Mock]]:
+    """A state with 3 computed vars with varying dependencies."""
+
+    v1x2_mock = mock.Mock()
+    v2x2_mock = mock.Mock()
+    v2x2x2_mock = mock.Mock()
+
+    class S(State):
+        x: int = 0
+        v1: int = 0
+        v2: int = 1
+
+        @ComputedVar
+        def v1x2(self) -> int:
+            v1x2_mock()
+            return self.v1 * 2
+
+        @ComputedVar
+        def v2x2(self) -> int:
+            v2x2_mock()
+            return self.v2 * 2
+
+        @ComputedVar
+        def v2x2x2(self) -> int:
+            v2x2x2_mock()
+            return self.v2 * 2 * 2
+
+    s = S()
+    s.dict()  # prime initial relationships by accessing all ComputedVars
+    mocks = [v1x2_mock, v2x2_mock, v2x2x2_mock]
+    for m in mocks:
+        m.reset_mock()
+    return s, mocks
+
+
+def test_set_dirty_var_no_recompute(interdependent_state):
+    """Test changing non-dependent Var doesn't recalc ComputedVar."""
+    state, mocks = interdependent_state
+    state.x = 5
+    assert state.get_delta() == {"s": {"x": 5}}
+    for m in mocks:
+        # expect no recalculation
+        m.assert_not_called()
+
+
+def test_set_dirty_var_partial_recompute_1(interdependent_state):
+    """Test changing dependent Var only recalc specific ComputedVar."""
+    state, (v1x2_mock, v2x2_mock, v2x2x2_mock) = interdependent_state
+    state.v1 = 1
+    assert state.get_delta() == {"s": {"v1": 1, "v1x2": 2}}
+    v1x2_mock.assert_called()
+    v2x2_mock.assert_not_called()
+    v2x2x2_mock.assert_not_called()
+
+
+def test_set_dirty_var_partial_recompute_2(interdependent_state):
+    """Test changing dependent Var only recalc ComputedVar (and dependents thereof)."""
+    state, (v1x2_mock, v2x2_mock, v2x2x2_mock) = interdependent_state
+    state.v2 = 2
+    assert state.get_delta() == {"s": {"v2": 2, "v2x2": 4, "v2x2x2": 8}}
+    v1x2_mock.assert_not_called()
+    v2x2_mock.assert_called()
+    v2x2x2_mock.assert_called()
 
 
 def test_set_dirty_substate(test_state, child_state, child_state2, grandchild_state):
