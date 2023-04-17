@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import traceback
 from abc import ABC
 from typing import (
@@ -51,6 +52,9 @@ class State(Base, ABC):
     # Backend vars inherited
     inherited_backend_vars: ClassVar[Dict[str, Any]] = {}
 
+    # Mapping of var name to set of computed variables that depend on it
+    computed_var_dependencies: ClassVar[Dict[str, Set[str]]] = {}
+
     # The event handlers.
     event_handlers: ClassVar[Dict[str, EventHandler]] = {}
 
@@ -65,6 +69,9 @@ class State(Base, ABC):
 
     # The set of dirty substates.
     dirty_substates: Set[str] = set()
+
+    # Mapping of var name to set of substates that depend on it
+    substate_var_dependencies: ClassVar[Dict[str, Set[str]]] = {}
 
     # The routing path that triggered the state
     router_data: Dict[str, Any] = {}
@@ -171,6 +178,8 @@ class State(Base, ABC):
             **cls.base_vars,
             **cls.computed_vars,
         }
+        cls.computed_var_dependencies = {}
+        cls.substate_var_dependencies = {}
 
         # Setup the base vars at the class level.
         for prop in cls.base_vars.values():
@@ -470,18 +479,40 @@ class State(Base, ABC):
 
         If the var is inherited, get the var from the parent state.
 
+        If the Var is a dependent of a ComputedVar, track this status in computed_var_dependencies.
+        If the Var is inherited, track the relationship in substate_var_dependencies.
+
         Args:
             name: The name of the var.
 
         Returns:
             The value of the var.
         """
+        vars = super().__getattribute__("vars")
+        if name in vars:
+            # Keep track of any ComputedVar that depends on this Var
+            computed_vars = super().__getattribute__("computed_vars")
+            this_frame, *parent_frames = inspect.stack()
+            for frame in parent_frames:
+                # Walk up the stack looking for another call to this same function
+                if frame.frame.f_code == this_frame.frame.f_code:
+                    requesting_attribute_name = frame.frame.f_locals.get("name")
+                    if requesting_attribute_name in computed_vars:
+                        super().__getattribute__(
+                            "computed_var_dependencies"
+                        ).setdefault(name, set()).add(requesting_attribute_name)
+                        break
         inherited_vars = {
             **super().__getattribute__("inherited_vars"),
             **super().__getattribute__("inherited_backend_vars"),
         }
         if name in inherited_vars:
-            return getattr(super().__getattribute__("parent_state"), name)
+            # mark that this state depends on its parent
+            parent_state = super().__getattribute__("parent_state")
+            parent_state.substate_var_dependencies.setdefault(name, set()).add(
+                self.get_name()
+            )
+            return getattr(parent_state, name)
         elif name in super().__getattribute__("backend_vars"):
             return super().__getattribute__("backend_vars").__getitem__(name)
         return super().__getattribute__(name)
@@ -628,10 +659,16 @@ class State(Base, ABC):
         """
         delta = {}
 
-        # Return the dirty vars, as well as all computed vars.
+        # Enumerate computed vars that depend on dirty vars
+        dirty_computed_vars = set(
+            cvar
+            for dirty_var in self.dirty_vars
+            for cvar in self.computed_vars
+            if cvar in self.computed_var_dependencies.get(dirty_var, set())
+        )
+        # Return the dirty vars, as well as computed vars that depend on dirty vars.
         subdelta = {
-            prop: getattr(self, prop)
-            for prop in self.dirty_vars | self.computed_vars.keys()
+            prop: getattr(self, prop) for prop in self.dirty_vars | dirty_computed_vars
         }
         if len(subdelta) > 0:
             delta[self.get_full_name()] = subdelta
@@ -649,9 +686,20 @@ class State(Base, ABC):
 
     def mark_dirty(self):
         """Mark the substate and all parent states as dirty."""
+        state_name = self.get_name()
         if self.parent_state is not None:
-            self.parent_state.dirty_substates.add(self.get_name())
+            self.parent_state.dirty_substates.add(state_name)
             self.parent_state.mark_dirty()
+        dirty_substates = {}
+        for var in self.dirty_vars:
+            for substate_name in self.substate_var_dependencies.get(var, set()):
+                substate = dirty_substates[substate_name] = self.substates[
+                    substate_name
+                ]
+                substate.dirty_vars.add(var)
+        for substate_name, substate in dirty_substates.items():
+            if substate_name not in self.dirty_substates:
+                substate.mark_dirty()
 
     def clean(self):
         """Reset the dirty vars."""
