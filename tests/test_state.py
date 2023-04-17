@@ -96,7 +96,13 @@ def test_state() -> TestState:
     Returns:
         A test state.
     """
-    return TestState()  # type: ignore
+    ts = TestState()  # type: ignore
+    yield ts
+    # For testing purposes, clear these mappings so test cases don't depend on each other
+    for state in [ts, *ts.substates.values()]:
+        state.substate_var_dependencies.clear()
+        state.computed_var_dependencies.clear()
+        state.dict()  # re-prime actual relationships
 
 
 @pytest.fixture
