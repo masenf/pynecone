@@ -67,6 +67,9 @@ class State(Base, ABC):
     # The set of dirty vars.
     dirty_vars: Set[str] = set()
 
+    # The set of dirty backend vars that might trigger state update.
+    dirty_backend_vars: Set[str] = set()
+
     # The set of dirty substates.
     dirty_substates: Set[str] = set()
 
@@ -160,6 +163,7 @@ class State(Base, ABC):
             "parent_state",
             "substates",
             "dirty_vars",
+            "dirty_backend_vars",
             "dirty_substates",
             "router_data",
         }
@@ -488,7 +492,10 @@ class State(Base, ABC):
         Returns:
             The value of the var.
         """
-        vars = super().__getattribute__("vars")
+        vars = {
+            **super().__getattribute__("vars"),
+            **super().__getattribute__("backend_vars"),
+        }
         if name in vars:
             # Keep track of any ComputedVar that depends on this Var
             computed_vars = super().__getattribute__("computed_vars")
@@ -534,6 +541,7 @@ class State(Base, ABC):
 
         if types.is_backend_variable(name):
             self.backend_vars.__setitem__(name, value)
+            self.dirty_backend_vars.add(name)
             self.mark_dirty()
             return
 
@@ -651,6 +659,27 @@ class State(Base, ABC):
         # Return the state update.
         return StateUpdate(delta=delta, events=events)
 
+    def _dirty_computed_vars(self, from_vars: Optional[Set[str]] = None) -> Set[str]:
+        """Get ComputedVars that need to be recomputed based on dirty_vars.
+
+        Returns:
+            Set of computed vars to include in the delta.
+        """
+        if from_vars is None:
+            from_vars = self.dirty_vars | self.dirty_backend_vars
+        dirty_computed_vars = set(
+            cvar
+            for dirty_var in from_vars
+            for cvar in self.computed_vars
+            if cvar in self.computed_var_dependencies.get(dirty_var, set())
+        )
+        if dirty_computed_vars:
+            # recursive call to catch computed vars that depend on computed vars
+            return dirty_computed_vars | self._dirty_computed_vars(
+                from_vars=dirty_computed_vars
+            )
+        return dirty_computed_vars
+
     def get_delta(self) -> Delta:
         """Get the delta for the state.
 
@@ -659,16 +688,10 @@ class State(Base, ABC):
         """
         delta = {}
 
-        # Enumerate computed vars that depend on dirty vars
-        dirty_computed_vars = set(
-            cvar
-            for dirty_var in self.dirty_vars
-            for cvar in self.computed_vars
-            if cvar in self.computed_var_dependencies.get(dirty_var, set())
-        )
         # Return the dirty vars, as well as computed vars that depend on dirty vars.
         subdelta = {
-            prop: getattr(self, prop) for prop in self.dirty_vars | dirty_computed_vars
+            prop: getattr(self, prop)
+            for prop in self.dirty_vars | self._dirty_computed_vars()
         }
         if len(subdelta) > 0:
             delta[self.get_full_name()] = subdelta
@@ -697,6 +720,12 @@ class State(Base, ABC):
                     substate_name
                 ]
                 substate.dirty_vars.add(var)
+        for var in self.dirty_backend_vars:
+            for substate_name in self.substate_var_dependencies.get(var, set()):
+                substate = dirty_substates[substate_name] = self.substates[
+                    substate_name
+                ]
+                substate.dirty_backend_vars.add(var)
         for substate_name, substate in dirty_substates.items():
             if substate_name not in self.dirty_substates:
                 substate.mark_dirty()
@@ -709,6 +738,7 @@ class State(Base, ABC):
 
         # Clean this state.
         self.dirty_vars = set()
+        self.dirty_backend_vars = set()
         self.dirty_substates = set()
 
     def dict(self, include_computed: bool = True, **kwargs) -> Dict[str, Any]:
