@@ -534,6 +534,167 @@ def test_set_dirty_substate(test_state, child_state, child_state2, grandchild_st
     assert grandchild_state.dirty_vars == set()
 
 
+class BackendState(State):
+    """A state consisting of only backend variables."""
+
+    _backend_var: int = 0
+    _backend_var_private: int = 0
+
+    @ComputedVar
+    def backend_var_rendered(self) -> str:
+        """Cast a backend variable to str.
+
+        Returns:
+            str representation of _backend_var.
+        """
+        return str(self._backend_var)
+
+    @ComputedVar
+    def backend_var_private_rendered(self) -> str:
+        """Cast a private backend variable to str.
+
+        Returns:
+            str representation of _backend_var.
+        """
+        return str(self._backend_var_private)
+
+    @ComputedVar
+    def backend_both(self) -> str:
+        """Cast both backend variables to str.
+
+        Returns:
+            str concatenating _backend_var and _backend_var_private.
+        """
+        return str(self._backend_var_private) + str(self._backend_var)
+
+    @ComputedVar
+    def computed_both(self) -> str:
+        """Concatenate both computed variables to str.
+
+        Returns:
+            str concatenating rendered computed functions.
+        """
+        return self.backend_var_private_rendered + self.backend_var_rendered
+
+
+class BackendChildState(BackendState):
+    """Another child state."""
+
+    @ComputedVar
+    def backend_var_processed(self) -> int:
+        """Calculate some value based on backend var in parent.
+
+        Returns:
+            _backend_var times 3.
+        """
+        return self._backend_var * 3
+
+
+@pytest.fixture
+def backend_state_with_substate():
+    """A state and substate with only backend and computed vars.
+
+    Returns:
+        (state, substate).
+    """
+    ts = BackendState()  # type: ignore
+    ss = ts.get_substate(["backend_child_state"])
+    assert ss is not None
+    for state in [ts, *ts.substates.values()]:
+        state.dict()  # re-prime relationships
+    return ts, ss
+
+
+def test_set_dirty_var_backend(backend_state_with_substate):
+    """Test changing state backend vars updates ComputedVar.
+
+    Args:
+        backend_state_with_substate: A tuple of (state, substate).
+    """
+    backend_state, _ = backend_state_with_substate
+    # Initially there should be no dirty vars.
+    assert backend_state.dirty_vars == set()
+
+    backend_state._backend_var_private = 1
+    assert backend_state.dirty_vars == {"_backend_var_private"}
+    assert backend_state.get_delta() == {
+        "backend_state": {
+            "backend_both": "10",
+            "backend_var_private_rendered": "1",
+            "computed_both": "10",
+        }
+    }
+    backend_state.clean()
+
+
+def test_set_dirty_var_backend_substate(backend_state_with_substate):
+    """Test changing state backend vars updates ComputedVar in substate.
+
+    Args:
+        backend_state_with_substate: A tuple of (state, substate).
+    """
+    backend_state, substate = backend_state_with_substate
+    # Initially there should be no dirty vars.
+    assert backend_state.dirty_vars == set()
+    assert substate.dirty_vars == set()
+
+    backend_state._backend_var_private = 1
+    assert substate.dirty_vars == set()
+    assert substate.get_full_name() not in backend_state.get_delta()
+    backend_state.clean()
+
+    backend_state._backend_var = 2
+    assert substate.dirty_vars == {"_backend_var"}
+    assert backend_state.dirty_vars == {"_backend_var"}
+    assert backend_state.get_delta() == {
+        backend_state.get_name(): {
+            "backend_both": "12",
+            "backend_var_rendered": "2",
+            "computed_both": "12",
+        },
+        substate.get_full_name(): {"backend_var_processed": 6},
+    }
+    backend_state.clean()
+    substate.clean()
+
+
+def test_computed_var_recursive():
+    """Check that delta is properly resolved when ComputedVar depends on ComputedVar."""
+
+    class ComputedRecursiveState(State):
+        v: int = 0
+        unrelated: int = -5
+
+        @ComputedVar
+        def stage1(self) -> int:
+            return self.v + 1
+
+        @ComputedVar
+        def stage2(self) -> int:
+            return self.stage1 * 2
+
+        @ComputedVar
+        def stage3(self) -> int:
+            return self.stage2 * self.stage2
+
+        @ComputedVar
+        def unrelated_computed(self) -> int:
+            return self.unrelated
+
+    crs = ComputedRecursiveState()
+    crs.dict()
+    assert crs.computed_var_dependencies == {
+        "v": {"stage1"},
+        "stage1": {"stage2"},
+        "stage2": {"stage3"},
+        "unrelated": {"unrelated_computed"},
+    }
+    crs.v = 1
+    assert crs.get_delta() == {
+        crs.get_full_name(): {"v": 1, "stage1": 2, "stage2": 4, "stage3": 16}
+    }
+
+
 def test_reset(test_state, child_state):
     """Test resetting the state.
 
