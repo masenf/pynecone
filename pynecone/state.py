@@ -113,7 +113,7 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
             self.track_vars = False
 
             # Add the dependencies.
-            for var in self.tracked_vars:
+            for var in self.tracked_vars - {cvar}:
                 self.computed_var_dependencies[var].add(cvar)
 
     def _init_mutable_fields(self):
