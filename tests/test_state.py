@@ -514,23 +514,25 @@ def test_set_dirty_substate(test_state, child_state, child_state2, grandchild_st
     # Setting a var should mark it as dirty.
     child_state.value = "test"
     assert child_state.dirty_vars == {"value"}
-    assert test_state.dirty_substates == {"child_state"}
-    assert child_state.dirty_substates == set()
+    assert not child_state2.get_delta()
+    assert not grandchild_state.get_delta()
 
     # Cleaning the parent state should remove the dirty substate.
     test_state.clean()
-    assert test_state.dirty_substates == set()
     assert child_state.dirty_vars == set()
 
     # Setting a var on the grandchild should bubble up.
     grandchild_state.value2 = "test2"
-    assert child_state.dirty_substates == {"grandchild_state"}
-    assert test_state.dirty_substates == {"child_state"}
+    assert not child_state2.get_delta()
+    assert child_state.get_delta() == {
+        grandchild_state.get_full_name(): {"value2": "test2"}
+    }
+    assert grandchild_state.get_delta() == {
+        grandchild_state.get_full_name(): {"value2": "test2"}
+    }
 
     # Cleaning the middle state should keep the parent state dirty.
     child_state.clean()
-    assert test_state.dirty_substates == {"child_state"}
-    assert child_state.dirty_substates == set()
     assert grandchild_state.dirty_vars == set()
 
 
@@ -639,12 +641,14 @@ def test_set_dirty_var_backend_substate(backend_state_with_substate):
     assert substate.dirty_vars == set()
 
     backend_state._backend_var_private = 1
+    assert backend_state.dirty_vars == {"_backend_var_private"}
     assert substate.dirty_vars == set()
+    assert not substate.get_delta()
     assert substate.get_full_name() not in backend_state.get_delta()
     backend_state.clean()
 
     backend_state._backend_var = 2
-    assert substate.dirty_vars == {"_backend_var"}
+    assert substate.dirty_vars == set()
     assert backend_state.dirty_vars == {"_backend_var"}
     assert backend_state.get_delta() == {
         backend_state.get_name(): {
@@ -684,8 +688,8 @@ def test_computed_var_recursive():
     crs = ComputedRecursiveState()
     crs.dict()
     assert crs.computed_var_dependencies == {
-        "v": {"stage1"},
-        "stage1": {"stage2"},
+        "v": {"stage1", "stage2", "stage3"},
+        "stage1": {"stage2", "stage3"},
         "stage2": {"stage3"},
         "unrelated": {"unrelated_computed"},
     }
@@ -718,9 +722,6 @@ def test_reset(test_state, child_state):
     # The dirty vars should be reset.
     assert test_state.dirty_vars == set()
     assert child_state.dirty_vars == set()
-
-    # The dirty substates should be reset.
-    assert test_state.dirty_substates == set()
 
 
 @pytest.mark.asyncio

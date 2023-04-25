@@ -65,9 +65,6 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
     # The set of dirty vars.
     dirty_vars: Set[str] = set()
 
-    # The set of dirty substates.
-    dirty_substates: Set[str] = set()
-
     # The routing path that triggered the state
     router_data: Dict[str, Any] = {}
 
@@ -227,7 +224,6 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
             "parent_state",
             "substates",
             "dirty_vars",
-            "dirty_substates",
             "router_data",
             "computed_var_dependencies",
             "track_vars",
@@ -556,7 +552,6 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
         if types.is_backend_variable(name):
             self.backend_vars.__setitem__(name, value)
             self.dirty_vars.add(name)
-            self.mark_dirty()
             return
 
         # Set the attribute.
@@ -565,7 +560,6 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
         # Add the var to the dirty list.
         if name in self.vars:
             self.dirty_vars.add(name)
-            self.mark_dirty()
 
     def reset(self):
         """Reset all the base vars to their default values."""
@@ -673,7 +667,7 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
         # Return the state update.
         return StateUpdate(delta=delta, events=events)
 
-    def _dirty_computed_vars(self, from_vars: Optional[Set[str]] = None) -> Set[str]:
+    def _dirty_computed_vars(self) -> Set[str]:
         """Get ComputedVars that need to be recomputed based on dirty_vars.
 
         Args:
@@ -682,9 +676,15 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
         Returns:
             Set of computed vars to include in the delta.
         """
+        # find dirty vars up the inheritence tree
+        dirty_vars = self.dirty_vars.copy()
+        parent = self.parent_state
+        while parent is not None:
+            dirty_vars.update(parent.dirty_vars)
+            parent = parent.parent_state
         return set(
             cvar
-            for dirty_var in from_vars or self.dirty_vars
+            for dirty_var in dirty_vars
             for cvar in self.computed_vars
             if cvar in self.computed_var_dependencies.get(dirty_var, set())
         )
@@ -706,10 +706,9 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
         if len(subdelta) > 0:
             delta[self.get_full_name()] = subdelta
 
-        # Recursively find the substate deltas.
-        substates = self.substates
-        for substate in self.dirty_substates:
-            delta.update(substates[substate].get_delta())
+        # Recursively find all substate deltas.
+        for substate in self.substates.values():
+            delta.update(substate.get_delta())
 
         # Format the delta.
         delta = format.format_state(delta)
@@ -717,21 +716,14 @@ class State(Base, ABC, extra=pydantic.Extra.allow):
         # Return the delta.
         return delta
 
-    def mark_dirty(self):
-        """Mark the substate and all parent states as dirty."""
-        if self.parent_state is not None:
-            self.parent_state.dirty_substates.add(self.get_name())
-            self.parent_state.mark_dirty()
-
     def clean(self):
         """Reset the dirty vars."""
         # Recursively clean the substates.
-        for substate in self.dirty_substates:
-            self.substates[substate].clean()
+        for substate in self.substates.values():
+            substate.clean()
 
         # Clean this state.
         self.dirty_vars = set()
-        self.dirty_substates = set()
 
     def dict(self, include_computed: bool = True, **kwargs) -> Dict[str, Any]:
         """Convert the object to a dictionary.
