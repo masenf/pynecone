@@ -445,7 +445,8 @@ class App(Base):
 
         # Update models during hot reload.
         if config.db_url is not None:
-            Model.create_all()
+            if not Model.automigrate():
+                Model.create_all()
 
         # Empty the .web pages directory
         compiler.purge_web_pages_dir()
