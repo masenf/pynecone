@@ -153,6 +153,9 @@ class Config(Base):
     # The database config.
     db_config: Optional[DBConfig] = None
 
+    # If true, update the database during compilation.
+    db_migrate: Optional[bool] = True
+
     # The redis url.
     redis_url: Optional[str] = constants.REDIS_URL
 
