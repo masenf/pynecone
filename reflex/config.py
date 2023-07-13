@@ -203,6 +203,14 @@ class Config(Base):
     # Timeout when launching the gunicorn server.
     timeout: int = constants.TIMEOUT
 
+    # These fields are neither saved nor read from the environment
+    _no_environment_fields = {
+        "admin_dash",
+        "env",
+        "frontend_packages",
+        "override_os_envs",
+    }
+
     def __init__(self, *args, **kwargs):
         """Initialize the config values.
 
@@ -223,6 +231,7 @@ class Config(Base):
             if (
                 key.startswith("_")
                 or key in os.environ
+                or key in self._no_environment_fields
                 or (value is None and key != "DB_URL")
             ):
                 continue
@@ -233,8 +242,8 @@ class Config(Base):
             load_dotenv(self.env_path, override=self.override_os_envs)  # type: ignore
             # Recompute constants after loading env variables
             importlib.reload(constants)
-            # Recompute instance attributes
-            self.recompute_field_values()
+        # Recompute instance attributes
+        self.recompute_field_values()
 
     def recompute_field_values(self):
         """Recompute instance field values to reflect new values after reloading
@@ -246,7 +255,27 @@ class Config(Base):
                     continue
                 setattr(self, field, getattr(constants, f"{field.upper()}"))
             except AttributeError:
-                pass
+                if field in self._no_environment_fields:
+                    continue
+                env_value = constants.get_value(
+                    field.upper(),
+                    default=None,
+                    type_=self.__fields__[field].type_,
+                )
+                if env_value is not None:
+                    super().__setattr__(field, env_value)
+
+    def __setattr__(self, key, value):
+        """Save override values to the environment to avoid losing them."""
+        super().__setattr__(key, value)
+        key = key.upper()
+        if (
+            key.startswith("_")
+            or key in self._no_environment_fields
+            or (value is None and key != "DB_URL")
+        ):
+            return  # not all variables are saved in the environment
+        os.environ[key] = str(value)
 
 
 def get_config() -> Config:
